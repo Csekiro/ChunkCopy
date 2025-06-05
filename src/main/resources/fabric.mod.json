@@ -1,0 +1,14 @@
+{
+	"schemaVersion": 1,
+	"id": "chunkcopy",
+	"version": "1.0.4",
+	"name": "ChunkCopy",
+	"entrypoints": {
+		"main": [
+			"csekiro.chunkcopy.ChunkCopierMod"
+		]
+	},
+	"depends": {
+		"minecraft": "1.20.6"
+	}
+}
