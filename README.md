@@ -14,11 +14,11 @@
 
 复制
 
-/chunks copy <x1> <z1> <x2> <z2>
+/chunks copy x1 z1 x2 z2
 
 粘贴
 
-/chunks paste <x3> <z3>
+/chunks paste x3 z3
 
 ----------------------------------------------------------------------------
 
@@ -32,9 +32,9 @@
 
 ----------------------------------------------------------------------------
 
-源区域 <x1> <z1>和<x2> <z2> 是斜对角选区,只要是斜对角就行.由于是完整区块复制,y轴范围默认为最低点到最高点,且不可更改.
+源区域 x1 z1和x2 z2 是斜对角选区,只要是斜对角就行.由于是完整区块复制,y轴范围默认为最低点到最高点,且不可更改.
 
-目标区域 <x3> <z3> 偏移方式原版/clone指令类似,即定义目标区域的西北方向较低（即在各轴上坐标值最小）的点的坐标.
+目标区域 x3 z3 偏移方式原版/clone指令类似,即定义目标区域的西北方向较低（即在各轴上坐标值最小）的点的坐标.
 
 区块边界可按F3+G查看.
 
@@ -54,10 +54,10 @@ Its limitations are that it cannot perform any offset on the y-axis, nor can it 
 Command Format:
 
 Copy
-/chunks copy <x1> <z1> <x2> <z2>
+/chunks copy x1 z1 x2 z2
 
 Paste
-/chunks paste <x3> <z3>
+/chunks paste x3 z3
 
 ----------------------------------------------------------------------------
 
@@ -71,8 +71,8 @@ Method 2: Type /chunks copy then press the spacebar, and look at the command's a
 
 ----------------------------------------------------------------------------
 
-The source area <x1> <z1> and <x2> <z2> It defines a diagonal selection; any two opposite corners will work. Since it's a full chunk copy, the y-axis range defaults from the world bottom to the world top and cannot be changed.
+The source area x1 z1 and x2 z2 define a diagonal selection; any two opposite corners will work. Since it's a full chunk copy, the y-axis range defaults from the world bottom to the world top and cannot be changed.
 
-The destination area <x3> <z3> The offset method is similar to the vanilla /clone command, which means you define the coordinates of the north-west, lower corner of the destination area (i.e., the point with the smallest coordinate values on each axis).
+The destination area x3 z3.The offset method is similar to the vanilla /clone command, which means you define the coordinates of the north-west, lower corner of the destination area (i.e., the point with the smallest coordinate values on each axis).
 
 Chunk borders can be viewed by pressing F3+G.
