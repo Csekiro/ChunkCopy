@@ -67,7 +67,7 @@ How to get chunk coordinates:
 
 Method 1: You can view them through the F3 debug screen.
 
-Method 2: Type /chunks copy then press the spacebar, and look at the command's auto-completion to get the chunk coordinates of your current location.
+Method 2: Type /chunks copy then press the spacebar, and look at the command's auto-completion(suggestion) to get the chunk coordinates of your current location.
 
 ----------------------------------------------------------------------------
 
