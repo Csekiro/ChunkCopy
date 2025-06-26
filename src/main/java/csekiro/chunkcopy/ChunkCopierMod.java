@@ -87,29 +87,6 @@ public class ChunkCopierMod implements ModInitializer {
                                             () -> Text.literal("§bPasted " + BUFFER.size() + " chunks"), false);
                                     return BUFFER.size();
                                 }))));
-
-        /* --- chunks reload --- */
-        root.then(CommandManager.literal("reload")
-                .requires(src -> src.hasPermissionLevel(2))
-                .executes(ctx -> {
-                    ServerCommandSource source = ctx.getSource();
-                    ServerPlayerEntity player = null;
-
-                    // 检查命令源是否为玩家
-                    if (source.getEntity() instanceof ServerPlayerEntity) {
-                        player = (ServerPlayerEntity) source.getEntity();
-                    } else {
-                        // 如果不是玩家执行（比如命令方块），尝试获取最近的玩家或使用其他逻辑
-                        // 这里需要根据你的具体需求来处理
-                        source.sendMessage(Text.literal("§c此命令只能由玩家执行。"));
-                        return 0;
-                    }
-
-                    reloadVisibleChunks(player);
-                    player.sendMessage(Text.literal("§a已重新加载你可见的所有区块。"), false);
-                    return 1;
-                }));
-
         /* 注册根节点 */
         d.register(root);
     }
@@ -299,26 +276,6 @@ public class ChunkCopierMod implements ModInitializer {
         });
     }
 
-    /* ─────────────── 重新加载所有可见区块 ─────────────── */
-    private static void reloadVisibleChunks(ServerPlayerEntity player) {
-        ServerWorld world = player.getServerWorld();
-        int viewDist = world.getServer().getPlayerManager().getSimulationDistance();
-        ChunkPos center = new ChunkPos(player.getBlockPos());
-
-        for (int dx = -viewDist; dx <= viewDist; dx++) {
-            for (int dz = -viewDist; dz <= viewDist; dz++) {
-                ChunkPos pos = new ChunkPos(center.x + dx, center.z + dz);
-                WorldChunk chunk = world.getChunkManager().getWorldChunk(pos.x, pos.z, false);
-                if (chunk == null) continue;
-
-                player.networkHandler.sendPacket(new UnloadChunkS2CPacket(pos));
-                player.networkHandler.sendPacket(new ChunkDataS2CPacket(chunk,
-                        world.getLightingProvider(), null, null));
-                player.networkHandler.sendPacket(new LightUpdateS2CPacket(pos,
-                        world.getLightingProvider(), null, null));
-            }
-        }
-    }
     // x 坐标补全
     private static final SuggestionProvider<ServerCommandSource> SUGGEST_CHUNK_X =
             (ctx, builder) -> {
