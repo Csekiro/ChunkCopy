@@ -1,8 +1,11 @@
 {
 	"schemaVersion": 1,
 	"id": "chunkcopy",
-	"version": "1.0.4",
+	"version": "1.0.5",
 	"name": "ChunkCopy",
+	"authors": [
+		"Csekiro"
+	],
 	"entrypoints": {
 		"main": [
 			"csekiro.chunkcopy.ChunkCopierMod"

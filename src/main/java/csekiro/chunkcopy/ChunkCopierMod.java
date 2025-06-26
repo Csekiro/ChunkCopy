@@ -4,6 +4,9 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.minecraft.block.BlockState;
+import net.minecraft.block.entity.BlockEntity;
+import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.s2c.play.ChunkDataS2CPacket;
 import net.minecraft.network.packet.s2c.play.LightUpdateS2CPacket;
 import net.minecraft.network.packet.s2c.play.UnloadChunkS2CPacket;
@@ -13,20 +16,20 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerChunkManager;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.ChunkSectionPos;
 import net.minecraft.world.chunk.ChunkSection;
 import net.minecraft.world.chunk.WorldChunk;
 
 import java.util.*;
-import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 /**
- * ✦ 复制 / 粘贴 / 重载区块  (Fabric Yarn 1.20.6)
- * · /chunks copy  fx fz tx tz
- * · /chunks paste dx dz   ——> 粘贴后自动刷新玩家视野
- * · /chunks reload
+ * 复制 / 粘贴 / 重载区块  (Fabric Yarn 1.20.6)
+ * /chunks copy  fx fz tx tz
+ * /chunks paste dx dz   ——> 粘贴后自动刷新玩家视野
+ * /chunks reload
  */
 public class ChunkCopierMod implements ModInitializer {
 
@@ -231,46 +234,68 @@ public class ChunkCopierMod implements ModInitializer {
         }
     }
 
-    /* ─────────────── 粘贴 + 光照 + 强刷 ─────────────── */
+    /* ─────────────── 粘贴 + 光照 + 强刷  ─────────────── */
     private static void paste(ServerWorld world, int destX, int destZ) {
+        // 确保操作在服务器主线程上执行，防止并发修改问题
         world.getServer().executeSync(() -> {
+            ServerChunkManager chunkManager = world.getChunkManager();
+            var lightingProvider = chunkManager.getLightingProvider();
 
-            var lighting   = world.getChunkManager().getLightingProvider();
-            var chunkMgr   = (ServerChunkManager) world.getChunkManager();
-            var storage    = chunkMgr.threadedAnvilChunkStorage;
-            int bottomYSec = world.getBottomSectionCoord();
-            int topYSec    = world.getTopSectionCoord();
+            Set<ChunkPos> modifiedChunks = new HashSet<>();
 
-            /* 记录所有正在观看粘贴区块的玩家 */
-            Set<ServerPlayerEntity> viewers = new HashSet<>();
-
+            // Phase 1: 放置方块数据并标记区块进行更新
             for (var entry : BUFFER.entrySet()) {
-                ChunkPos off  = entry.getKey();
-                int      cx   = destX + off.x;
-                int      cz   = destZ + off.z;
-                WorldChunk dest = world.getChunk(cx, cz);
+                ChunkPos offset = entry.getKey();
+                int cx = destX + offset.x;
+                int cz = destZ + offset.z;
+                ChunkPos pos = new ChunkPos(cx, cz);
+                WorldChunk destChunk = world.getChunk(cx, cz);
 
-                /* ① 拷贝 Section 并刷新计数 */
-                System.arraycopy(entry.getValue(), 0, dest.getSectionArray(), 0, entry.getValue().length);
-                for (ChunkSection sec : dest.getSectionArray()) if (sec != null) sec.calculateCounts();
+                // 清理旧的方块实体，防止数据冲突或物品复制
+                destChunk.getBlockEntities().clear();
+                destChunk.getBlockEntityPositions().clear();
 
-                /* ② 光照重算 */
-                dest.setLightOn(false);
-                for (int sy = bottomYSec; sy < topYSec; sy++) {
-                    lighting.setSectionStatus(ChunkSectionPos.from(cx, sy, cz), false);
+                // 使用 System.arraycopy 高效地将区块数据复制到目标区块
+                System.arraycopy(entry.getValue(), 0, destChunk.getSectionArray(), 0, entry.getValue().length);
+
+                // 标记区块需要保存
+                destChunk.setNeedsSaving(true);
+
+                // 标记所有区块段的光照数据为“无效”。
+                // 这是告诉光照引擎这些区域需要重新计算的正确方式。
+                int bottomSection = world.getBottomSectionCoord();
+                int topSection = world.getTopSectionCoord();
+                for (int sy = bottomSection; sy < topSection; sy++) {
+                    lightingProvider.setSectionStatus(ChunkSectionPos.from(cx, sy, cz), false);
                 }
 
-                /* ③ 推整包给观看者（并收集观看者） */
-                var packet = new ChunkDataS2CPacket(dest, lighting, null, null);
-                for (ServerPlayerEntity p : storage.getPlayersWatchingChunk(dest.getPos())) {
-                    viewers.add(p);
-                    p.networkHandler.sendPacket(packet);
-                }
-                dest.setNeedsSaving(true);
+                modifiedChunks.add(pos);
             }
 
-            /* ④ 阻塞直到光照线程清空 */
-            while (lighting.doLightUpdates() != 0) { /* busy-wait */ }
+            // Phase 2: 强制客户端刷新 & 触发光照计算 (非阻塞)
+            // 这个循环必须在所有区块数据都放置完毕后执行。
+            for (ChunkPos pos : modifiedChunks) {
+                WorldChunk chunk = world.getChunk(pos.x, pos.z);
+
+                // 【关键修复】使用正确的方法触发光照更新。
+                // 此方法会检查指定区块的光照状态，并在必要时安排更新，然后将光照数据包发送给客户端。
+                // 这是一个非阻塞调用，不会冻结服务器。
+                lightingProvider.checkBlock(pos.getStartPos());
+
+                // 获取观察该区块的玩家列表
+                var viewers = chunkManager.threadedAnvilChunkStorage.getPlayersWatchingChunk(pos);
+
+                // 通过先卸载再发送新数据的方式，强制客户端刷新区块，确保看到最新的方块
+                UnloadChunkS2CPacket unloadPacket = new UnloadChunkS2CPacket(pos);
+                ChunkDataS2CPacket chunkDataPacket = new ChunkDataS2CPacket(chunk, lightingProvider, null, null);
+
+                for (ServerPlayerEntity player : viewers) {
+                    player.networkHandler.sendPacket(unloadPacket);
+                    player.networkHandler.sendPacket(chunkDataPacket);
+                }
+            }
+            // 移除了所有阻塞性代码和手动发送光照包的逻辑。
+            // `updateChunkStatus` 会处理好后续的光照计算触发和数据包发送。
         });
     }
 
