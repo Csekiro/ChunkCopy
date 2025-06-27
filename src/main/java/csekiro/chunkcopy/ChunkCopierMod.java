@@ -10,17 +10,24 @@ import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.s2c.play.ChunkDataS2CPacket;
 import net.minecraft.network.packet.s2c.play.LightUpdateS2CPacket;
 import net.minecraft.network.packet.s2c.play.UnloadChunkS2CPacket;
+import net.minecraft.registry.Registry;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerChunkManager;
+import net.minecraft.server.world.ServerLightingProvider;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.ChunkSectionPos;
 import net.minecraft.world.chunk.ChunkSection;
+import net.minecraft.world.chunk.PalettedContainer;
 import net.minecraft.world.chunk.WorldChunk;
+import net.minecraft.block.Blocks;
+import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.world.biome.Biome;
 
 import java.util.*;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
@@ -175,7 +182,7 @@ public class ChunkCopierMod implements ModInitializer {
 
                 // 深拷贝每个ChunkSection
                 for (int i = 0; i < srcSections.length; i++) {
-                    if (srcSections[i] != null) {
+                    if (srcSections[i] != null && !srcSections[i].isEmpty()) { // 增加非空判断
                         copiedSections[i] = deepCopyChunkSection(srcSections[i]);
                     } else {
                         copiedSections[i] = null;
@@ -216,11 +223,13 @@ public class ChunkCopierMod implements ModInitializer {
         // 确保操作在服务器主线程上执行，防止并发修改问题
         world.getServer().executeSync(() -> {
             ServerChunkManager chunkManager = world.getChunkManager();
-            var lightingProvider = chunkManager.getLightingProvider();
+            ServerLightingProvider lightingProvider = chunkManager.getLightingProvider();
+            // 获取生物群系注册表
+            final Registry<Biome> biomeRegistry = world.getRegistryManager().get(RegistryKeys.BIOME);
 
             Set<ChunkPos> modifiedChunks = new HashSet<>();
 
-            // Phase 1: 放置方块数据并标记区块进行更新
+            // Phase 1: 放置方块数据
             for (var entry : BUFFER.entrySet()) {
                 ChunkPos offset = entry.getKey();
                 int cx = destX + offset.x;
@@ -228,53 +237,83 @@ public class ChunkCopierMod implements ModInitializer {
                 ChunkPos pos = new ChunkPos(cx, cz);
                 WorldChunk destChunk = world.getChunk(cx, cz);
 
-                // 清理旧的方块实体，防止数据冲突或物品复制
-                destChunk.getBlockEntities().clear();
-                destChunk.getBlockEntityPositions().clear();
-
-                // 使用 System.arraycopy 高效地将区块数据复制到目标区块
-                System.arraycopy(entry.getValue(), 0, destChunk.getSectionArray(), 0, entry.getValue().length);
-
-                // 标记区块需要保存
-                destChunk.setNeedsSaving(true);
-
-                // 标记所有区块段的光照数据为“无效”。
-                // 这是告诉光照引擎这些区域需要重新计算的正确方式。
-                int bottomSection = world.getBottomSectionCoord();
-                int topSection = world.getTopSectionCoord();
-                for (int sy = bottomSection; sy < topSection; sy++) {
-                    lightingProvider.setSectionStatus(ChunkSectionPos.from(cx, sy, cz), false);
+                for(BlockPos bePos : new ArrayList<>(destChunk.getBlockEntityPositions())) {
+                    destChunk.removeBlockEntity(bePos);
                 }
 
+                ChunkSection[] sectionsToPaste = entry.getValue();
+                ChunkSection[] destSections = destChunk.getSectionArray();
+
+                for (int i = 0; i < destSections.length; i++) {
+                    ChunkSection sectionToPaste = sectionsToPaste[i];
+                    ChunkSection destSection = destSections[i];
+                    int sectionY = destChunk.sectionIndexToCoord(i);
+
+                    // 【修复 #1】: 使用正确的构造函数创建新的 ChunkSection
+                    if (destSection == null) {
+                        destSection = new ChunkSection(biomeRegistry);
+                        destSections[i] = destSection;
+                    }
+
+                    if (sectionToPaste == null || sectionToPaste.isEmpty()) {
+                        // ... 清空逻辑 (不变)
+                        for (int y = 0; y < 16; y++) {
+                            for (int z = 0; z < 16; z++) {
+                                for (int x = 0; x < 16; x++) {
+                                    destSection.setBlockState(x, y, z, Blocks.AIR.getDefaultState(), false);
+                                }
+                            }
+                        }
+                    } else {
+                        // ... 逐方块复制逻辑 (不变)
+                        for (int y = 0; y < 16; y++) {
+                            for (int z = 0; z < 16; z++) {
+                                for (int x = 0; x < 16; x++) {
+                                    destSection.setBlockState(x, y, z, sectionToPaste.getBlockState(x, y, z), false);
+                                }
+                            }
+                        }
+
+                        // 【修复 #2】: 将 ReadableContainer 强转为 PalettedContainer 来写入
+                        var destBiomes = (PalettedContainer<RegistryEntry<Biome>>)destSection.getBiomeContainer();
+                        for (int by = 0; by < 4; by++) {
+                            for (int bz = 0; bz < 4; bz++) {
+                                for (int bx = 0; bx < 4; bx++) {
+                                    RegistryEntry<Biome> biome = sectionToPaste.getBiomeContainer().get(bx, by, bz);
+                                    destBiomes.set(bx, by, bz, biome);
+                                }
+                            }
+                        }
+                    }
+                    destSection.calculateCounts();
+                    lightingProvider.setSectionStatus(ChunkSectionPos.from(cx, sectionY, cz), false);
+                }
+
+                destChunk.setNeedsSaving(true);
                 modifiedChunks.add(pos);
             }
 
-            // Phase 2: 强制客户端刷新 & 触发光照计算 (非阻塞)
-            // 这个循环必须在所有区块数据都放置完毕后执行。
+            // Phase 2: 光照和同步 (不变)
+            // ...
             for (ChunkPos pos : modifiedChunks) {
-                WorldChunk chunk = world.getChunk(pos.x, pos.z);
-
-                // 【关键修复】使用正确的方法触发光照更新。
-                // 此方法会检查指定区块的光照状态，并在必要时安排更新，然后将光照数据包发送给客户端。
-                // 这是一个非阻塞调用，不会冻结服务器。
-                lightingProvider.checkBlock(pos.getStartPos());
-
-                // 获取观察该区块的玩家列表
+                lightingProvider.light(world.getChunk(pos.x, pos.z), false);
                 var viewers = chunkManager.threadedAnvilChunkStorage.getPlayersWatchingChunk(pos);
+                if (viewers.isEmpty()) continue;
 
-                // 通过先卸载再发送新数据的方式，强制客户端刷新区块，确保看到最新的方块
+                WorldChunk chunk = world.getChunk(pos.x, pos.z);
                 UnloadChunkS2CPacket unloadPacket = new UnloadChunkS2CPacket(pos);
                 ChunkDataS2CPacket chunkDataPacket = new ChunkDataS2CPacket(chunk, lightingProvider, null, null);
+                LightUpdateS2CPacket lightPacket = new LightUpdateS2CPacket(pos, lightingProvider, null, null);
 
                 for (ServerPlayerEntity player : viewers) {
                     player.networkHandler.sendPacket(unloadPacket);
                     player.networkHandler.sendPacket(chunkDataPacket);
+                    player.networkHandler.sendPacket(lightPacket);
                 }
             }
-            // 移除了所有阻塞性代码和手动发送光照包的逻辑。
-            // `updateChunkStatus` 会处理好后续的光照计算触发和数据包发送。
         });
     }
+
 
     // x 坐标补全
     private static final SuggestionProvider<ServerCommandSource> SUGGEST_CHUNK_X =
