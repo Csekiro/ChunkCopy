@@ -18,18 +18,20 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerChunkManager;
 import net.minecraft.server.world.ServerLightingProvider;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.server.world.ThreadedAnvilChunkStorage;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.util.math.ChunkSectionPos;
-import net.minecraft.world.chunk.ChunkSection;
-import net.minecraft.world.chunk.PalettedContainer;
-import net.minecraft.world.chunk.WorldChunk;
+import net.minecraft.world.LightType;
+import net.minecraft.world.chunk.*;
 import net.minecraft.block.Blocks;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.world.biome.Biome;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 
 /**
@@ -249,14 +251,14 @@ public class ChunkCopierMod implements ModInitializer {
                     ChunkSection destSection = destSections[i];
                     int sectionY = destChunk.sectionIndexToCoord(i);
 
-                    // 【修复 #1】: 使用正确的构造函数创建新的 ChunkSection
+                    //使用正确的构造函数创建新的 ChunkSection
                     if (destSection == null) {
                         destSection = new ChunkSection(biomeRegistry);
                         destSections[i] = destSection;
                     }
 
                     if (sectionToPaste == null || sectionToPaste.isEmpty()) {
-                        // ... 清空逻辑 (不变)
+                        // 清空逻辑
                         for (int y = 0; y < 16; y++) {
                             for (int z = 0; z < 16; z++) {
                                 for (int x = 0; x < 16; x++) {
@@ -265,7 +267,7 @@ public class ChunkCopierMod implements ModInitializer {
                             }
                         }
                     } else {
-                        // ... 逐方块复制逻辑 (不变)
+                        // 逐方块复制逻辑
                         for (int y = 0; y < 16; y++) {
                             for (int z = 0; z < 16; z++) {
                                 for (int x = 0; x < 16; x++) {
@@ -274,7 +276,7 @@ public class ChunkCopierMod implements ModInitializer {
                             }
                         }
 
-                        // 【修复 #2】: 将 ReadableContainer 强转为 PalettedContainer 来写入
+                        //将 ReadableContainer 强转为 PalettedContainer 来写入
                         var destBiomes = (PalettedContainer<RegistryEntry<Biome>>)destSection.getBiomeContainer();
                         for (int by = 0; by < 4; by++) {
                             for (int bz = 0; bz < 4; bz++) {
@@ -293,23 +295,35 @@ public class ChunkCopierMod implements ModInitializer {
                 modifiedChunks.add(pos);
             }
 
-            // Phase 2: 光照和同步 (不变)
-            // ...
+            // Phase 2: 光照和同步
+            ThreadedAnvilChunkStorage threadedAnvilChunkStorage = world.getChunkManager().threadedAnvilChunkStorage;
+
             for (ChunkPos pos : modifiedChunks) {
-                lightingProvider.light(world.getChunk(pos.x, pos.z), false);
-                var viewers = chunkManager.threadedAnvilChunkStorage.getPlayersWatchingChunk(pos);
-                if (viewers.isEmpty()) continue;
-
                 WorldChunk chunk = world.getChunk(pos.x, pos.z);
-                UnloadChunkS2CPacket unloadPacket = new UnloadChunkS2CPacket(pos);
-                ChunkDataS2CPacket chunkDataPacket = new ChunkDataS2CPacket(chunk, lightingProvider, null, null);
-                LightUpdateS2CPacket lightPacket = new LightUpdateS2CPacket(pos, lightingProvider, null, null);
 
-                for (ServerPlayerEntity player : viewers) {
-                    player.networkHandler.sendPacket(unloadPacket);
-                    player.networkHandler.sendPacket(chunkDataPacket);
-                    player.networkHandler.sendPacket(lightPacket);
-                }
+                //调用 light 方法，它会返回一个在光照线程中完成的 Future
+                CompletableFuture<Chunk> lightingFuture = lightingProvider.light(chunk, false);
+
+                // 创建包含最新方块数据的数据包。此时 lightingProvider 内部的光照数据还是旧的，但这没关系。
+                ChunkDataS2CPacket chunkDataPacket = new ChunkDataS2CPacket(chunk, lightingProvider, null, null);
+
+                lightingFuture.thenAcceptAsync(litChunk -> {
+                    // ---- 这部分代码将在光照计算完成后，在服务器主线程中执行 ----
+
+                    var viewers = threadedAnvilChunkStorage.getPlayersWatchingChunk(pos);
+                    if (viewers.isEmpty()) {
+                        return; // 没有玩家在看，不需要发送数据包。好像continue也行，不知道哪个更好
+                    }
+
+                    //发送光照数据包
+                    LightUpdateS2CPacket lightPacket = new LightUpdateS2CPacket(pos, lightingProvider, null, null);
+
+                    for (ServerPlayerEntity player : viewers) {
+                        player.networkHandler.sendPacket(chunkDataPacket); // 更新方块
+                        player.networkHandler.sendPacket(lightPacket); // 更新光照
+                    }
+
+                }, world.getServer()); // *** 关键：指定在服务器主线程中执行回调 ***
             }
         });
     }
