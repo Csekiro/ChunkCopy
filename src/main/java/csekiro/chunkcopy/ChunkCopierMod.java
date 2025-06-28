@@ -141,7 +141,7 @@ public class ChunkCopierMod implements ModInitializer {
                 if (!allLoaded) {
                     attempts++;
                     try {
-                        Thread.sleep(50); // 等待50ms
+                        Thread.sleep(50); //等待50ms
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         break;
